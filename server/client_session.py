@@ -5,7 +5,12 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from server.protocol import read_line, send_line, recv_exactly
+from wire_protocol import (
+    ProtocolError,
+    read_command,
+    recv_exactly,
+    send_response,
+)
 from models.scan import Scan
 from analysis.elf_parser import ElfParser
 from protocol_limits import MAX_FILE_SIZE_BYTES
@@ -26,7 +31,7 @@ class ClientSession:
         print(f"[+] cliente conectado: {self.addr}")
         try:
             while True:
-                line = read_line(self.conn)
+                line = read_command(self.conn)
                 if line is None: break
                 if not line: continue
 
@@ -35,7 +40,7 @@ class ClientSession:
 
                 if command == "/CONNECT":
                     self.connected = True
-                    send_line(self.conn, "OK CONNECTED\n")
+                    send_response(self.conn, "OK CONNECTED")
                 elif command == "/UPLOAD":
                     if not self.handle_upload(parts):
                         break
@@ -44,7 +49,7 @@ class ClientSession:
                 elif command == "/COMPARE":
                     self.handle_compare(parts)
                 elif command == "/QUIT":
-                    send_line(self.conn, "OK BYE\n")
+                    send_response(self.conn, "OK BYE")
                     break
                 
                 elif command in ["/INFO", "/SECTION_HEADERS", "/PROGRAM_HEADERS", "/STRINGS", "/SYMBOLS"]:
@@ -52,7 +57,9 @@ class ClientSession:
                 elif command == "/HELP":
                     self.handle_help()
                 else:
-                    send_line(self.conn, "ERR INVALID_COMMAND\n")
+                    send_response(self.conn, "ERR INVALID_COMMAND")
+        except ProtocolError as exc:
+            print(f"[!] erro de protocolo com {self.addr}: {exc}")
         except Exception as e:
             print(f"[!] Erro na sessao: {e}")
         finally:
@@ -60,33 +67,34 @@ class ClientSession:
 
     def handle_upload(self, parts: list[str]) -> bool:
         if not self.connected:
-            send_line(self.conn, "ERR NOT_CONNECTED\n")
+            send_response(self.conn, "ERR NOT_CONNECTED")
             return True
         if len(parts) != 3:
-            send_line(self.conn, "ERR INVALID_UPLOAD\n")
+            send_response(self.conn, "ERR INVALID_UPLOAD")
             return True
 
         filename = os.path.basename(parts[1])
         try:
             file_size = int(parts[2])
         except ValueError:
-            send_line(self.conn, "ERR INVALID_SIZE\n")
+            send_response(self.conn, "ERR INVALID_SIZE")
             return False
 
         if file_size <= 0:
-            send_line(self.conn, "ERR INVALID_SIZE\n")
+            send_response(self.conn, "ERR INVALID_SIZE")
             return False
 
         if file_size > MAX_FILE_SIZE_BYTES:
-            send_line(
+            send_response(
                 self.conn,
-                f"ERR FILE_TOO_LARGE max_bytes={MAX_FILE_SIZE_BYTES}\n",
+                f"ERR FILE_TOO_LARGE max_bytes={MAX_FILE_SIZE_BYTES}",
             )
             return False
 
-        file_bytes = recv_exactly(self.conn, file_size)
-        if file_bytes is None or len(file_bytes) == 0:
-            send_line(self.conn, "ERR INCOMPLETE_UPLOAD\n")
+        try:
+            file_bytes = recv_exactly(self.conn, file_size)
+        except ProtocolError:
+            send_response(self.conn, "ERR INCOMPLETE_UPLOAD")
             return False
 
         scan_id = ClientSession.next_scan_id
@@ -104,15 +112,15 @@ class ClientSession:
         scan_obj.hashes = parser.calculate_hashes()
 
         ClientSession.scans[scan_id] = scan_obj
-        send_line(self.conn, f"OK UPLOADED scan_id={scan_id} filename={filename}\n")
+        send_response(self.conn, f"OK UPLOADED scan_id={scan_id} filename={filename}")
         return True
 
     def handle_list(self):
         if not ClientSession.scans:
-            send_line(self.conn, "SCAN ID | FILE\n(Nenhum arquivo analisado)\n")
+            send_response(self.conn, "SCAN ID | FILE\n(Nenhum arquivo analisado)")
             return
         res = "SCAN ID | FILE\n" + "\n".join([f"{sid} | {s.filename}" for sid, s in ClientSession.scans.items()])
-        send_line(self.conn, res + "\n")
+        send_response(self.conn, res.rstrip("\n"))
 
     def handle_help(self):
         """Etapa 20: Retorna a lista de comandos disponíveis e suas respectivas funções"""
@@ -131,25 +139,25 @@ class ClientSession:
             "/QUIT                 - Encerra a sessão com o servidor com segurança.\n"
         )
        
-        send_line(self.conn, help_text + "\n")
+        send_response(self.conn, help_text.rstrip("\n"))
 
     def handle_compare(self, parts: list[str]):
         if len(parts) != 3:
-            send_line(self.conn, "ERR MISSING_ARGS. Uso: /COMPARE <id1> <id2>\n")
+            send_response(self.conn, "ERR MISSING_ARGS. Uso: /COMPARE <id1> <id2>")
             return
             
         try:
             id1 = int(parts[1])
             id2 = int(parts[2])
         except ValueError:
-            send_line(self.conn, "ERR INVALID_SCAN_ID\n")
+            send_response(self.conn, "ERR INVALID_SCAN_ID")
             return
             
         scan1 = ClientSession.scans.get(id1)
         scan2 = ClientSession.scans.get(id2)
         
         if not scan1 or not scan2:
-            send_line(self.conn, "ERR SCAN_NOT_FOUND (Verifique os IDs com /LIST)\n")
+            send_response(self.conn, "ERR SCAN_NOT_FOUND (Verifique os IDs com /LIST)")
             return
             
         hash1 = scan1.hashes.get("SSDEEP", "")
@@ -191,22 +199,22 @@ class ClientSession:
             f"Symbols: {symbol_score}%\n"
             f"Strings: {string_score}%\n"
         )
-        send_line(self.conn, res + "\n")
+        send_response(self.conn, res.rstrip("\n"))
 
     def handle_analysis_commands(self, command: str, parts: list[str]):
         """Centraliza e valida comandos que exigem a passagem do ID do binário analisado"""
         if len(parts) != 2:
-            send_line(self.conn, f"ERR MISSING_SCAN_ID. Uso: {command} <id>\n")
+            send_response(self.conn, f"ERR MISSING_SCAN_ID. Uso: {command} <id>")
             return
         try:
             sid = int(parts[1])
         except ValueError:
-            send_line(self.conn, "ERR INVALID_SCAN_ID\n")
+            send_response(self.conn, "ERR INVALID_SCAN_ID")
             return
 
         scan = ClientSession.scans.get(sid)
         if not scan:
-            send_line(self.conn, "ERR SCAN_NOT_FOUND\n")
+            send_response(self.conn, "ERR SCAN_NOT_FOUND")
             return
 
         parser = ElfParser(Path(scan.filepath))
@@ -222,20 +230,20 @@ class ClientSession:
                    f"Program Headers: {h.get('phnum')}\n"
                    f"SSDEEP: {scan.hashes.get('SSDEEP', 'N/A')}")
                                   
-            send_line(self.conn, res + "\n")
+            send_response(self.conn, res.rstrip("\n"))
 
         elif command == "/SECTION_HEADERS":
             res = parser.get_section_headers()
-            send_line(self.conn, f"OK SECTIONS FOR SCAN {sid}\n" + res + "\n")
+            send_response(self.conn, f"OK SECTIONS FOR SCAN {sid}\n{res}")
 
         elif command == "/PROGRAM_HEADERS":
             res = parser.get_program_headers()
-            send_line(self.conn, f"OK PROGRAM HEADERS FOR SCAN {sid}\n" + res + "\n")
+            send_response(self.conn, f"OK PROGRAM HEADERS FOR SCAN {sid}\n{res}")
 
         elif command == "/STRINGS":
             res = parser.get_strings().split()
-            send_line(self.conn, f"OK STRINGS FOR SCAN {sid}\n" + res + "\n")
+            send_response(self.conn, f"OK STRINGS FOR SCAN {sid}\n" + res)
 
         elif command == "/SYMBOLS":
             res = parser.get_symbols()
-            send_line(self.conn, f"OK SYMBOLS FOR SCAN {sid}\n" + res + "\n")
+            send_response(self.conn, f"OK SYMBOLS FOR SCAN {sid}\n{res}")
