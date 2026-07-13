@@ -13,7 +13,7 @@ def read_line(conn: socket.socket) -> str | None:
     return data.decode("utf-8", errors="replace").strip()
 
 def send_line(conn: socket.socket, message: str):
-    conn.sendall((message + "\n").encode("utf-8"))
+    conn.sendall((message + "\n\n").encode("utf-8"))
 
 def recv_exactly(conn: socket.socket, size: int) -> bytes | None:
     data = bytearray()
