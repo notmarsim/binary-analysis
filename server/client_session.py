@@ -1,4 +1,3 @@
-# server/client_session.py
 import os
 import socket
 import sys
@@ -37,7 +36,7 @@ class ClientSession:
 
                 if command == "/CONNECT":
                     self.connected = True
-                    send_line(self.conn, "OK CONNECTED")
+                    send_line(self.conn, "OK CONNECTED\n") 
                 elif command == "/UPLOAD":
                     self.handle_upload(parts)
                 elif command == "/LIST":
@@ -45,10 +44,10 @@ class ClientSession:
                 elif command == "/INFO":
                     self.handle_info(parts)
                 elif command == "/QUIT":
-                    send_line(self.conn, "OK BYE")
+                    send_line(self.conn, "OK BYE\n")
                     break
                 else:
-                    send_line(self.conn, "ERR INVALID_COMMAND")
+                    send_line(self.conn, "ERR INVALID_COMMAND\n")
         except Exception as e:
             print(f"[!] Erro na sessao: {e}")
         finally:
@@ -56,23 +55,22 @@ class ClientSession:
 
     def handle_upload(self, parts: list[str]):
         if not self.connected:
-            send_line(self.conn, "ERR NOT_CONNECTED")
+            send_line(self.conn, "ERR NOT_CONNECTED\n")
             return
         if len(parts) != 3:
-            send_line(self.conn, "ERR INVALID_UPLOAD")
+            send_line(self.conn, "ERR INVALID_UPLOAD\n")
             return
 
         filename = os.path.basename(parts[1])
         try:
             file_size = int(parts[2])
         except ValueError:
-            send_line(self.conn, "ERR INVALID_SIZE")
+            send_line(self.conn, "ERR INVALID_SIZE\n")
             return
 
-        # Lê os bytes diretamente do buffer sem mandar comandos intermediários
         file_bytes = recv_exactly(self.conn, file_size)
         if file_bytes is None or len(file_bytes) == 0:
-            send_line(self.conn, "ERR INCOMPLETE_UPLOAD")
+            send_line(self.conn, "ERR INCOMPLETE_UPLOAD\n")
             return
 
         scan_id = ClientSession.next_scan_id
@@ -90,28 +88,28 @@ class ClientSession:
         scan_obj.hashes = parser.calculate_hashes()
 
         ClientSession.scans[scan_id] = scan_obj
-        send_line(self.conn, f"OK UPLOADED scan_id={scan_id} filename={filename}")
+        send_line(self.conn, f"OK UPLOADED scan_id={scan_id} filename={filename}\n")
 
     def handle_list(self):
         if not ClientSession.scans:
-            send_line(self.conn, "SCAN ID | FILE\n(Nenhum arquivo analisado)")
+            send_line(self.conn, "SCAN ID | FILE\n(Nenhum arquivo analisado)\n")
             return
         res = "SCAN ID | FILE\n" + "\n".join([f"{sid} | {s.filename}" for sid, s in ClientSession.scans.items()])
-        send_line(self.conn, res)
+        send_line(self.conn, res + "\n") 
 
     def handle_info(self, parts: list[str]):
         if len(parts) != 2:
-            send_line(self.conn, "ERR MISSING_SCAN_ID")
+            send_line(self.conn, "ERR MISSING_SCAN_ID\n")
             return
         try:
             sid = int(parts[1])
         except ValueError:
-            send_line(self.conn, "ERR INVALID_SCAN_ID")
+            send_line(self.conn, "ERR INVALID_SCAN_ID\n")
             return
 
         scan = ClientSession.scans.get(sid)
         if not scan:
-            send_line(self.conn, "ERR SCAN_NOT_FOUND")
+            send_line(self.conn, "ERR SCAN_NOT_FOUND\n")
             return
 
         h = scan.header
@@ -121,5 +119,5 @@ class ClientSession:
                f"Type: {h.get('Type')}\n"
                f"Entry Point: {h.get('Entry')}\n"
                f"Sections: {h.get('shnum')}\n"
-               f"Program Headers: {h.get('phnum')}")
+               f"Program Headers: {h.get('phnum')}\n")
         send_line(self.conn, res)
