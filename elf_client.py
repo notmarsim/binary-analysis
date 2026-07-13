@@ -1,15 +1,54 @@
+import argparse
 import socket
-import sys
 from pathlib import Path
+from typing import Sequence
 
-HOST = "127.0.0.1"
-PORT = 9000
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 9000
+
+
+def parse_port(value: str) -> int:
+    """Converte e valida uma porta TCP informada pela linha de comando."""
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("a porta deve ser um número inteiro") from exc
+
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("a porta deve estar entre 1 e 65535")
+
+    return port
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Cliente TCP para envio e análise remota de arquivos ELF."
+    )
+    parser.add_argument(
+        "file",
+        nargs="?",
+        type=Path,
+        help="arquivo ELF enviado imediatamente após a conexão",
+    )
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        help=f"endereço IPv4 ou nome do servidor (padrão: {DEFAULT_HOST})",
+    )
+    parser.add_argument(
+        "--port",
+        type=parse_port,
+        default=DEFAULT_PORT,
+        help=f"porta TCP do servidor (padrão: {DEFAULT_PORT})",
+    )
+    return parser.parse_args(argv)
+
 
 def read_response(sock: socket.socket) -> str:
-    """Lê linhas do socket até encontrar um bloco vazio terminador (\\n\\n)"""
+    """Lê linhas do socket até encontrar um bloco vazio terminador (\n\n)."""
     lines = []
     buffer = bytearray()
-    
+
     while True:
         chunk = sock.recv(1)
         if not chunk:
@@ -24,11 +63,13 @@ def read_response(sock: socket.socket) -> str:
             buffer.clear()
         else:
             buffer.extend(chunk)
-            
+
     return "\n".join(lines)
 
-def send_line(sock: socket.socket, line: str):
+
+def send_line(sock: socket.socket, line: str) -> None:
     sock.sendall((line + "\n").encode("utf-8"))
+
 
 def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
     parts = command_line.split(maxsplit=1)
@@ -37,8 +78,8 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
         return False
 
     local_path = Path(parts[1].strip())
-    if not local_path.exists() or local_path.is_dir():
-        print(f"Erro local: Arquivo inválido ou não encontrado.")
+    if not local_path.is_file():
+        print("Erro local: arquivo inválido ou não encontrado.")
         return False
 
     filename = local_path.name
@@ -49,45 +90,75 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
     sock.sendall(file_bytes)
     return True
 
-def main():
-    if len(sys.argv) == 2:
-        file_path = Path(sys.argv[1])
-        if not file_path.exists(): return
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect((HOST, PORT))
-            send_line(sock, "/CONNECT")
-            read_response(sock)
-            if handle_local_upload(sock, f"/UPLOAD {file_path}"):
-                print(read_response(sock))
-            send_line(sock, "/QUIT")
-            read_response(sock)
-        return
 
-    print("[+] Conectando em modo interativo...")
+def run_single_upload(host: str, port: int, file_path: Path) -> None:
+    if not file_path.is_file():
+        raise FileNotFoundError(f"arquivo inválido ou não encontrado: {file_path}")
+
+    with socket.create_connection((host, port)) as sock:
+        send_line(sock, "/CONNECT")
+        read_response(sock)
+
+        if handle_local_upload(sock, f"/UPLOAD {file_path}"):
+            print(read_response(sock))
+
+        send_line(sock, "/QUIT")
+        read_response(sock)
+
+
+def run_interactive(host: str, port: int) -> None:
+    print(f"[+] conectando ao servidor em {host}:{port}")
+
+    with socket.create_connection((host, port)) as sock:
+        print(
+            "[+] digite os comandos "
+            "(ex.: /CONNECT, /UPLOAD /bin/ls, /LIST, /INFO 1, /QUIT)"
+        )
+
+        while True:
+            user_input = input("> ").strip()
+            if not user_input:
+                continue
+
+            if user_input.upper().startswith("/UPLOAD"):
+                if handle_local_upload(sock, user_input):
+                    print(read_response(sock))
+                continue
+
+            send_line(sock, user_input)
+            response = read_response(sock)
+            print(response)
+
+            if user_input.upper() == "/QUIT" or "OK BYE" in response:
+                break
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect((HOST, PORT))
-            print("[+] Digite os comandos (ex: /CONNECT, /UPLOAD /bin/ls, /LIST, /INFO 1, /QUIT)")
-            
-            while True:
-                user_input = input("> ").strip()
-                if not user_input:
-                    continue
-                
-                if user_input.upper().startswith("/UPLOAD"):
-                    if handle_local_upload(sock, user_input):
-                        print(read_response(sock))
-                else:
-                    send_line(sock, user_input)
-                    response = read_response(sock)
-                    print(response)
-                    if user_input.upper() == "/QUIT" or "OK BYE" in response:
-                        break
-                        
+        if args.file is not None:
+            run_single_upload(args.host, args.port, args.file)
+        else:
+            run_interactive(args.host, args.port)
+    except FileNotFoundError as exc:
+        print(f"[-] {exc}")
+        return 2
     except ConnectionRefusedError:
-        print("[-] Servidor offline.")
+        print(f"[-] conexão recusada por {args.host}:{args.port}")
+        return 1
+    except socket.gaierror as exc:
+        print(f"[-] não foi possível resolver o host '{args.host}': {exc}")
+        return 1
+    except OSError as exc:
+        print(f"[-] erro de rede ao conectar em {args.host}:{args.port}: {exc}")
+        return 1
     except KeyboardInterrupt:
-        print("\n[-] Conexão encerrada.")
+        print("\n[-] conexão encerrada pelo usuário")
+        return 130
+
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
