@@ -8,6 +8,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from server.protocol import read_line, send_line, recv_exactly
 from models.scan import Scan
 from analysis.elf_parser import ElfParser
+from analysis import hashing, similarity
 
 UPLOAD_DIR = Path("uploads")
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -39,6 +40,8 @@ class ClientSession:
                     self.handle_upload(parts)
                 elif command == "/LIST":
                     self.handle_list()
+                elif command == "/COMPARE":
+                    self.handle_compare(parts)
                 elif command == "/QUIT":
                     send_line(self.conn, "OK BYE\n")
                     break
@@ -105,6 +108,7 @@ class ClientSession:
             "/CONNECT              - Estabelece a conexão inicial com o servidor.\n"
             "/UPLOAD <caminho>     - Envia um binário ELF local para análise.\n"
             "/LIST                 - Lista todos os arquivos já enviados e seus respectivos SCAN IDs.\n"
+            "/COMPARE <id1> <id2>  - Compara dois binários via SSDEEP e retorna a similaridade (0 a 100%).\n"
             "/INFO <id>            - Exibe um resumo técnico do cabeçalho (Arquitetura, Entry Point, etc).\n"
             "/SECTION_HEADERS <id> - Lista as Section Headers (tabela de seções) do binário.\n"
             "/PROGRAM_HEADERS <id> - Exibe os cabeçalhos de programa (segmentos de execução).\n"
@@ -115,6 +119,66 @@ class ClientSession:
         )
        
         send_line(self.conn, help_text + "\n")
+
+    def handle_compare(self, parts: list[str]):
+        if len(parts) != 3:
+            send_line(self.conn, "ERR MISSING_ARGS. Uso: /COMPARE <id1> <id2>\n")
+            return
+            
+        try:
+            id1 = int(parts[1])
+            id2 = int(parts[2])
+        except ValueError:
+            send_line(self.conn, "ERR INVALID_SCAN_ID\n")
+            return
+            
+        scan1 = ClientSession.scans.get(id1)
+        scan2 = ClientSession.scans.get(id2)
+        
+        if not scan1 or not scan2:
+            send_line(self.conn, "ERR SCAN_NOT_FOUND (Verifique os IDs com /LIST)\n")
+            return
+            
+        hash1 = scan1.hashes.get("SSDEEP", "")
+        hash2 = scan2.hashes.get("SSDEEP", "")
+        
+        parser1 = ElfParser(Path(scan1.filepath))
+        parser2 = ElfParser(Path(scan2.filepath))
+
+        ssdeep_score = hashing.calculate_similarity(
+        hash1,
+        hash2
+        )
+
+        string_score = similarity.compare_strings(
+            parser1,
+            parser2
+        )
+
+        section_score = similarity.compare_sections(
+            parser1,
+            parser2
+        )
+
+        symbol_score = similarity.compare_symbols(
+            parser1,
+            parser2
+        )
+
+        res = (
+            "=== COMPARAÇÃO DE BINÁRIOS ELF ===\n"
+
+            f"[ID {id1}] Arquivo: {scan1.filename}\n"
+            f"[ID {id2}] Arquivo: {scan2.filename}\n"
+
+            "---- Similaridade ----\n"
+
+            f"SSDEEP: {ssdeep_score}%\n"
+            f"Sections: {section_score}%\n"
+            f"Symbols: {symbol_score}%\n"
+            f"Strings: {string_score}%\n"
+        )
+        send_line(self.conn, res + "\n")
 
     def handle_analysis_commands(self, command: str, parts: list[str]):
         """Centraliza e valida comandos que exigem a passagem do ID do binário analisado"""
@@ -142,7 +206,9 @@ class ClientSession:
                    f"Type: {h.get('Type')}\n"
                    f"Entry Point: {h.get('Entry')}\n"
                    f"Sections: {h.get('shnum')}\n"
-                   f"Program Headers: {h.get('phnum')}")
+                   f"Program Headers: {h.get('phnum')}\n"
+                   f"SSDEEP: {scan.hashes.get('SSDEEP', 'N/A')}")
+                                  
             send_line(self.conn, res + "\n")
 
         elif command == "/SECTION_HEADERS":
@@ -154,7 +220,7 @@ class ClientSession:
             send_line(self.conn, f"OK PROGRAM HEADERS FOR SCAN {sid}\n" + res + "\n")
 
         elif command == "/STRINGS":
-            res = parser.get_strings()
+            res = parser.get_strings().split()
             send_line(self.conn, f"OK STRINGS FOR SCAN {sid}\n" + res + "\n")
 
         elif command == "/SYMBOLS":
