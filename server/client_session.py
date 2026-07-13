@@ -26,26 +26,27 @@ class ClientSession:
         try:
             while True:
                 line = read_line(self.conn)
-                if line is None:
-                    break
-                if not line:
-                    continue
+                if line is None: break
+                if not line: continue
 
                 parts = line.split()
                 command = parts[0].upper()
 
                 if command == "/CONNECT":
                     self.connected = True
-                    send_line(self.conn, "OK CONNECTED\n") 
+                    send_line(self.conn, "OK CONNECTED\n")
                 elif command == "/UPLOAD":
                     self.handle_upload(parts)
                 elif command == "/LIST":
                     self.handle_list()
-                elif command == "/INFO":
-                    self.handle_info(parts)
                 elif command == "/QUIT":
                     send_line(self.conn, "OK BYE\n")
                     break
+                
+                elif command in ["/INFO", "/SECTION_HEADERS", "/PROGRAM_HEADERS", "/STRINGS", "/SYMBOLS"]:
+                    self.handle_analysis_commands(command, parts)
+                elif command == "/HELP":
+                    self.handle_help()
                 else:
                     send_line(self.conn, "ERR INVALID_COMMAND\n")
         except Exception as e:
@@ -95,11 +96,30 @@ class ClientSession:
             send_line(self.conn, "SCAN ID | FILE\n(Nenhum arquivo analisado)\n")
             return
         res = "SCAN ID | FILE\n" + "\n".join([f"{sid} | {s.filename}" for sid, s in ClientSession.scans.items()])
-        send_line(self.conn, res + "\n") 
+        send_line(self.conn, res + "\n")
 
-    def handle_info(self, parts: list[str]):
+    def handle_help(self):
+        """Etapa 20: Retorna a lista de comandos disponíveis e suas respectivas funções"""
+        help_text = (
+            "=== COMANDOS DISPONÍVEIS ===\n"
+            "/CONNECT              - Estabelece a conexão inicial com o servidor.\n"
+            "/UPLOAD <caminho>     - Envia um binário ELF local para análise.\n"
+            "/LIST                 - Lista todos os arquivos já enviados e seus respectivos SCAN IDs.\n"
+            "/INFO <id>            - Exibe um resumo técnico do cabeçalho (Arquitetura, Entry Point, etc).\n"
+            "/SECTION_HEADERS <id> - Lista as Section Headers (tabela de seções) do binário.\n"
+            "/PROGRAM_HEADERS <id> - Exibe os cabeçalhos de programa (segmentos de execução).\n"
+            "/STRINGS <id>         - Extrai e exibe as strings imprimíveis contidas no binário.\n"
+            "/SYMBOLS <id>         - Exibe a tabela de símbolos (funções e variáveis globais).\n"
+            "/HELP                 - Mostra este menu de ajuda com comandos e funcionalidades.\n"
+            "/QUIT                 - Encerra a sessão com o servidor com segurança.\n"
+        )
+       
+        send_line(self.conn, help_text + "\n")
+
+    def handle_analysis_commands(self, command: str, parts: list[str]):
+        """Centraliza e valida comandos que exigem a passagem do ID do binário analisado"""
         if len(parts) != 2:
-            send_line(self.conn, "ERR MISSING_SCAN_ID\n")
+            send_line(self.conn, f"ERR MISSING_SCAN_ID. Uso: {command} <id>\n")
             return
         try:
             sid = int(parts[1])
@@ -112,12 +132,31 @@ class ClientSession:
             send_line(self.conn, "ERR SCAN_NOT_FOUND\n")
             return
 
-        h = scan.header
-        res = (f"File: {scan.filename}\n"
-               f"Size: {scan.file_size}\n"
-               f"Architecture: {h.get('Machine')}\n"
-               f"Type: {h.get('Type')}\n"
-               f"Entry Point: {h.get('Entry')}\n"
-               f"Sections: {h.get('shnum')}\n"
-               f"Program Headers: {h.get('phnum')}\n")
-        send_line(self.conn, res)
+        parser = ElfParser(Path(scan.filepath))
+
+        if command == "/INFO":
+            h = scan.header
+            res = (f"File: {scan.filename}\n"
+                   f"Size: {scan.file_size}\n"
+                   f"Architecture: {h.get('Machine')}\n"
+                   f"Type: {h.get('Type')}\n"
+                   f"Entry Point: {h.get('Entry')}\n"
+                   f"Sections: {h.get('shnum')}\n"
+                   f"Program Headers: {h.get('phnum')}")
+            send_line(self.conn, res + "\n")
+
+        elif command == "/SECTION_HEADERS":
+            res = parser.get_section_headers()
+            send_line(self.conn, f"OK SECTIONS FOR SCAN {sid}\n" + res + "\n")
+
+        elif command == "/PROGRAM_HEADERS":
+            res = parser.get_program_headers()
+            send_line(self.conn, f"OK PROGRAM HEADERS FOR SCAN {sid}\n" + res + "\n")
+
+        elif command == "/STRINGS":
+            res = parser.get_strings()
+            send_line(self.conn, f"OK STRINGS FOR SCAN {sid}\n" + res + "\n")
+
+        elif command == "/SYMBOLS":
+            res = parser.get_symbols()
+            send_line(self.conn, f"OK SYMBOLS FOR SCAN {sid}\n" + res + "\n")
