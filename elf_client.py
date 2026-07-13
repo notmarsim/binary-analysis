@@ -3,6 +3,8 @@ import socket
 from pathlib import Path
 from typing import Sequence
 
+from protocol_limits import MAX_FILE_SIZE_BYTES
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000
 
@@ -82,9 +84,19 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
         print("Erro local: arquivo inválido ou não encontrado.")
         return False
 
+    size = local_path.stat().st_size
+    if size <= 0:
+        print("Erro local: o arquivo está vazio.")
+        return False
+    if size > MAX_FILE_SIZE_BYTES:
+        print(
+            "Erro local: arquivo excede o limite de "
+            f"{MAX_FILE_SIZE_BYTES} bytes."
+        )
+        return False
+
     filename = local_path.name
     file_bytes = local_path.read_bytes()
-    size = len(file_bytes)
 
     send_line(sock, f"/UPLOAD {filename} {size}")
     sock.sendall(file_bytes)
