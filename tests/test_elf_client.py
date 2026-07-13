@@ -1,4 +1,5 @@
 import argparse
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,16 +38,19 @@ class ParseArgumentsTests(unittest.TestCase):
 
         self.assertEqual(args.host, DEFAULT_HOST)
         self.assertEqual(args.port, DEFAULT_PORT)
-        self.assertIsNone(args.file)
 
-    def test_accepts_custom_endpoint_and_file(self) -> None:
-        args = parse_args(
-            ["--host", "192.168.1.20", "--port", "9100", "/bin/ls"]
-        )
+    def test_accepts_custom_endpoint(self) -> None:
+        args = parse_args(["--host", "192.168.1.20", "--port", "9100"])
 
         self.assertEqual(args.host, "192.168.1.20")
         self.assertEqual(args.port, 9100)
-        self.assertEqual(str(args.file), "/bin/ls")
+
+    def test_rejects_positional_upload_path(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit) as context:
+                parse_args(["/bin/ls"])
+
+        self.assertEqual(context.exception.code, 2)
 
 
 class RecordingSocket:
