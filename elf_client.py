@@ -27,12 +27,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Cliente TCP para envio e análise remota de arquivos ELF."
     )
     parser.add_argument(
-        "file",
-        nargs="?",
-        type=Path,
-        help="arquivo ELF enviado imediatamente após a conexão",
-    )
-    parser.add_argument(
         "--host",
         default=DEFAULT_HOST,
         help=f"endereço IPv4 ou nome do servidor (padrão: {DEFAULT_HOST})",
@@ -103,21 +97,6 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
     return True
 
 
-def run_single_upload(host: str, port: int, file_path: Path) -> None:
-    if not file_path.is_file():
-        raise FileNotFoundError(f"arquivo inválido ou não encontrado: {file_path}")
-
-    with socket.create_connection((host, port)) as sock:
-        send_line(sock, "/CONNECT")
-        read_response(sock)
-
-        if handle_local_upload(sock, f"/UPLOAD {file_path}"):
-            print(read_response(sock))
-
-        send_line(sock, "/QUIT")
-        read_response(sock)
-
-
 def run_interactive(host: str, port: int) -> None:
     print(f"[+] conectando ao servidor em {host}:{port}")
 
@@ -149,13 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
 
     try:
-        if args.file is not None:
-            run_single_upload(args.host, args.port, args.file)
-        else:
-            run_interactive(args.host, args.port)
-    except FileNotFoundError as exc:
-        print(f"[-] {exc}")
-        return 2
+        run_interactive(args.host, args.port)
     except ConnectionRefusedError:
         print(f"[-] conexão recusada por {args.host}:{args.port}")
         return 1
