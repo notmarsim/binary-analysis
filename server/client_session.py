@@ -8,9 +8,9 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from server.protocol import read_line, send_line, recv_exactly
 from models.scan import Scan
 from analysis.elf_parser import ElfParser
+from protocol_limits import MAX_FILE_SIZE_BYTES
 
 UPLOAD_DIR = Path("uploads")
-MAX_FILE_SIZE = 20 * 1024 * 1024
 
 class ClientSession:
     scans = {}
@@ -36,7 +36,8 @@ class ClientSession:
                     self.connected = True
                     send_line(self.conn, "OK CONNECTED\n")
                 elif command == "/UPLOAD":
-                    self.handle_upload(parts)
+                    if not self.handle_upload(parts):
+                        break
                 elif command == "/LIST":
                     self.handle_list()
                 elif command == "/QUIT":
@@ -54,25 +55,36 @@ class ClientSession:
         finally:
             self.conn.close()
 
-    def handle_upload(self, parts: list[str]):
+    def handle_upload(self, parts: list[str]) -> bool:
         if not self.connected:
             send_line(self.conn, "ERR NOT_CONNECTED\n")
-            return
+            return True
         if len(parts) != 3:
             send_line(self.conn, "ERR INVALID_UPLOAD\n")
-            return
+            return True
 
         filename = os.path.basename(parts[1])
         try:
             file_size = int(parts[2])
         except ValueError:
             send_line(self.conn, "ERR INVALID_SIZE\n")
-            return
+            return False
+
+        if file_size <= 0:
+            send_line(self.conn, "ERR INVALID_SIZE\n")
+            return False
+
+        if file_size > MAX_FILE_SIZE_BYTES:
+            send_line(
+                self.conn,
+                f"ERR FILE_TOO_LARGE max_bytes={MAX_FILE_SIZE_BYTES}\n",
+            )
+            return False
 
         file_bytes = recv_exactly(self.conn, file_size)
         if file_bytes is None or len(file_bytes) == 0:
             send_line(self.conn, "ERR INCOMPLETE_UPLOAD\n")
-            return
+            return False
 
         scan_id = ClientSession.next_scan_id
         ClientSession.next_scan_id += 1
@@ -90,6 +102,7 @@ class ClientSession:
 
         ClientSession.scans[scan_id] = scan_obj
         send_line(self.conn, f"OK UPLOADED scan_id={scan_id} filename={filename}\n")
+        return True
 
     def handle_list(self):
         if not ClientSession.scans:
