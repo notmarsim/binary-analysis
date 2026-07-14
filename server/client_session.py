@@ -92,7 +92,14 @@ class ClientSession:
                     send_response(self.conn, "OK BYE")
                     break
                 
-                elif command in ["/INFO", "/SECTION_HEADERS", "/PROGRAM_HEADERS", "/STRINGS", "/SYMBOLS"]:
+                elif command in [
+                    "/INFO",
+                    "/HASHES",
+                    "/SECTION_HEADERS",
+                    "/PROGRAM_HEADERS",
+                    "/STRINGS",
+                    "/SYMBOLS",
+                ]:
                     self.handle_analysis_commands(command, parts)
                 elif command == "/HELP":
                     self.handle_help()
@@ -211,6 +218,7 @@ class ClientSession:
             "/LIST                 - Lista todos os arquivos já enviados e seus respectivos SCAN IDs.\n"
             "/COMPARE <id1> <id2>  - Compara dois binários via SSDEEP e retorna a similaridade (0 a 100%).\n"
             "/INFO <id>            - Exibe um resumo técnico do cabeçalho (Arquitetura, Entry Point, etc).\n"
+            "/HASHES <id>          - Exibe MD5, SHA-1, SHA-256 e SSDEEP do arquivo.\n"
             "/SECTION_HEADERS <id> - Lista as Section Headers (tabela de seções) do binário.\n"
             "/PROGRAM_HEADERS <id> - Exibe os cabeçalhos de programa (segmentos de execução).\n"
             "/STRINGS <id>         - Extrai e exibe as strings imprimíveis contidas no binário.\n"
@@ -294,6 +302,21 @@ class ClientSession:
         scan = ClientSession._get_scan(sid)
         if not scan:
             send_response(self.conn, "ERR SCAN_NOT_FOUND")
+            return
+
+        if command == "/HASHES":
+            labels = (
+                ("MD5", "MD5"),
+                ("SHA1", "SHA-1"),
+                ("SHA256", "SHA-256"),
+                ("SSDEEP", "SSDEEP"),
+            )
+            lines = [f"OK HASHES FOR SCAN {sid}"]
+            lines.extend(
+                f"{label}: {scan.hashes.get(key, 'N/A')}"
+                for key, label in labels
+            )
+            send_response(self.conn, "\n".join(lines))
             return
 
         parser = ElfParser(Path(scan.filepath))

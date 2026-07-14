@@ -1,23 +1,15 @@
-import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import ModuleType
 from unittest.mock import Mock, call, patch
-
-try:
-    import ssdeep  # noqa: F401
-except ModuleNotFoundError:
-    ssdeep_stub = ModuleType("ssdeep")
-    ssdeep_stub.compare = lambda _left, _right: 0
-    sys.modules["ssdeep"] = ssdeep_stub
 
 from protocol_limits import (
     MAX_FILE_SIZE_BYTES,
     MAX_FILENAME_SIZE_BYTES,
     SERVER_SESSION_TIMEOUT_SECONDS,
 )
+from models.scan import Scan
 from server.client_session import ClientSession
 
 
@@ -75,6 +67,29 @@ class ClientSessionTestCase(unittest.TestCase):
         self.socket = RecordingSocket()
         self.session = ClientSession(self.socket, ("127.0.0.1", 12345))
         self.session.connected = True
+
+
+
+
+class HashReportingTests(ClientSessionTestCase):
+    def test_exposes_all_hashes_for_existing_scan(self) -> None:
+        scan = Scan(7, "sample.elf", "/tmp/sample.elf")
+        scan.hashes = {
+            "MD5": "md5-value",
+            "SHA1": "sha1-value",
+            "SHA256": "sha256-value",
+            "SSDEEP": "ssdeep-value",
+        }
+        ClientSession._store_scan(scan)
+
+        self.session.handle_analysis_commands("/HASHES", ["/HASHES", "7"])
+
+        response = self.socket.response_text()
+        self.assertIn("OK HASHES FOR SCAN 7", response)
+        self.assertIn("MD5: md5-value", response)
+        self.assertIn("SHA-1: sha1-value", response)
+        self.assertIn("SHA-256: sha256-value", response)
+        self.assertIn("SSDEEP: ssdeep-value", response)
 
 
 class UploadSizeValidationTests(ClientSessionTestCase):

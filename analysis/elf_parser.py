@@ -3,6 +3,8 @@ import hashlib
 import struct
 from pathlib import Path
 
+from analysis import hashing
+
 ELF_MAGIC = b"\x7fELF"
 
 
@@ -21,10 +23,16 @@ class ElfParser:
             return {
                 "MD5": hashlib.md5(data).hexdigest(),
                 "SHA1": hashlib.sha1(data).hexdigest(),
-                "SHA256": hashlib.sha256(data).hexdigest()
+                "SHA256": hashlib.sha256(data).hexdigest(),
+                "SSDEEP": hashing.calculate_fuzzy_hash(data),
             }
         except Exception:
-            return {"MD5": "N/A", "SHA1": "N/A", "SHA256": "N/A"}
+            return {
+                "MD5": "N/A",
+                "SHA1": "N/A",
+                "SHA256": "N/A",
+                "SSDEEP": "N/A",
+            }
 
     def parse_header_with_binutils(self) -> dict:
         info = {

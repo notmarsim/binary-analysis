@@ -107,3 +107,16 @@ A conexão é considerada inválida quando ocorre uma destas situações:
 
 Cliente e servidor devem encerrar a sessão quando não for possível recuperar a
 sincronização do fluxo.
+
+## Consulta de hashes
+
+Depois de um upload aceito, o cliente pode solicitar os hashes calculados pelo
+servidor:
+
+```text
+/HASHES <scan_id>\n
+```
+
+A resposta contém MD5, SHA-1, SHA-256 e SSDEEP. Quando a biblioteca opcional
+`ssdeep` não está disponível, o campo SSDEEP é retornado como `N/A`; os hashes
+criptográficos continuam disponíveis.
