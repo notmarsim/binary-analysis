@@ -1,4 +1,3 @@
-import os
 import socket
 import sys
 from pathlib import Path
@@ -7,13 +6,14 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from wire_protocol import (
     ProtocolError,
+    decode_upload_filename,
     read_command,
     recv_exactly,
     send_response,
 )
 from models.scan import Scan
 from analysis.elf_parser import ElfParser
-from protocol_limits import MAX_FILE_SIZE_BYTES
+from protocol_limits import MAX_FILE_SIZE_BYTES, MAX_FILENAME_SIZE_BYTES
 from analysis import hashing, similarity
 
 UPLOAD_DIR = Path("uploads")
@@ -73,22 +73,43 @@ class ClientSession:
             send_response(self.conn, "ERR INVALID_UPLOAD")
             return True
 
-        filename = os.path.basename(parts[1])
         try:
+            filename_size = int(parts[1])
             file_size = int(parts[2])
         except ValueError:
             send_response(self.conn, "ERR INVALID_SIZE")
-            return False
+            return True
+
+        if not 1 <= filename_size <= MAX_FILENAME_SIZE_BYTES:
+            send_response(
+                self.conn,
+                f"ERR INVALID_FILENAME_SIZE max_bytes={MAX_FILENAME_SIZE_BYTES}",
+            )
+            return True
 
         if file_size <= 0:
             send_response(self.conn, "ERR INVALID_SIZE")
-            return False
+            return True
 
         if file_size > MAX_FILE_SIZE_BYTES:
             send_response(
                 self.conn,
                 f"ERR FILE_TOO_LARGE max_bytes={MAX_FILE_SIZE_BYTES}",
             )
+            return True
+
+        send_response(self.conn, "OK READY")
+
+        try:
+            filename_bytes = recv_exactly(self.conn, filename_size)
+        except ProtocolError:
+            send_response(self.conn, "ERR INCOMPLETE_FILENAME")
+            return False
+
+        try:
+            filename = decode_upload_filename(filename_bytes)
+        except ProtocolError:
+            send_response(self.conn, "ERR INVALID_FILENAME")
             return False
 
         try:
@@ -106,13 +127,16 @@ class ClientSession:
 
         scan_obj = Scan(scan_id, filename, str(output_path))
         scan_obj.file_size = file_size
-        
+
         parser = ElfParser(output_path)
         scan_obj.header = parser.parse_header_with_binutils()
         scan_obj.hashes = parser.calculate_hashes()
 
         ClientSession.scans[scan_id] = scan_obj
-        send_response(self.conn, f"OK UPLOADED scan_id={scan_id} filename={filename}")
+        send_response(
+            self.conn,
+            f"OK UPLOADED scan_id={scan_id} filename={filename}",
+        )
         return True
 
     def handle_list(self):

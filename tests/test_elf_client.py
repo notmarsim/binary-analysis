@@ -87,6 +87,44 @@ class LocalUploadValidationTests(unittest.TestCase):
         self.assertFalse(uploaded)
         self.assertEqual(sock.sent, b"")
 
+    @patch("elf_client.read_response", return_value="OK READY")
+    def test_sends_filename_with_spaces_after_server_is_ready(
+        self, read_response
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "meu programa.elf"
+            path.write_bytes(b"ELF")
+            sock = RecordingSocket()
+
+            uploaded = handle_local_upload(sock, f"/UPLOAD {path}")
+
+        filename_bytes = path.name.encode("utf-8")
+        expected = (
+            f"/UPLOAD {len(filename_bytes)} 3\n".encode("utf-8")
+            + filename_bytes
+            + b"ELF"
+        )
+        self.assertTrue(uploaded)
+        self.assertEqual(sock.sent, expected)
+        read_response.assert_called_once_with(sock)
+
+    @patch("elf_client.read_response", return_value="ERR NOT_CONNECTED")
+    def test_does_not_send_payload_when_server_rejects_metadata(
+        self, read_response
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sample.elf"
+            path.write_bytes(b"ELF")
+            sock = RecordingSocket()
+
+            with patch("builtins.print"):
+                uploaded = handle_local_upload(sock, f"/UPLOAD {path}")
+
+        expected_header = f"/UPLOAD {len(path.name.encode('utf-8'))} 3\n".encode()
+        self.assertFalse(uploaded)
+        self.assertEqual(sock.sent, expected_header)
+        read_response.assert_called_once_with(sock)
+
 
 if __name__ == "__main__":
     unittest.main()

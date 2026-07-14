@@ -3,6 +3,8 @@ import unittest
 
 from wire_protocol import (
     ProtocolError,
+    decode_upload_filename,
+    encode_upload_filename,
     read_command,
     read_response,
     send_command,
@@ -51,6 +53,22 @@ class ProtocolFramingTests(unittest.TestCase):
     def test_rejects_command_with_line_break(self) -> None:
         with self.assertRaises(ValueError):
             send_command(self.left, "/LIST\n/QUIT")
+
+    def test_upload_filename_supports_spaces_and_utf8(self) -> None:
+        filename = "análise binária.elf"
+
+        encoded = encode_upload_filename(filename)
+
+        self.assertEqual(decode_upload_filename(encoded), filename)
+        self.assertEqual(len(encoded), len(filename.encode("utf-8")))
+
+    def test_rejects_path_like_upload_filename(self) -> None:
+        with self.assertRaises(ValueError):
+            encode_upload_filename("../sample.elf")
+
+    def test_rejects_non_utf8_upload_filename(self) -> None:
+        with self.assertRaises(ProtocolError):
+            decode_upload_filename(b"\xff")
 
 
 if __name__ == "__main__":
