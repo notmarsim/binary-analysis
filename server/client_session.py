@@ -1,5 +1,6 @@
 import socket
 import sys
+import threading
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -23,8 +24,36 @@ from analysis import hashing, similarity
 UPLOAD_DIR = Path("uploads")
 
 class ClientSession:
-    scans = {}
+    scans: dict[int, Scan] = {}
     next_scan_id = 1
+    _state_lock = threading.RLock()
+
+    @classmethod
+    def _reserve_scan_id(cls) -> int:
+        with cls._state_lock:
+            scan_id = cls.next_scan_id
+            cls.next_scan_id += 1
+            return scan_id
+
+    @classmethod
+    def _store_scan(cls, scan: Scan) -> None:
+        with cls._state_lock:
+            cls.scans[scan.scan_id] = scan
+
+    @classmethod
+    def _get_scan(cls, scan_id: int) -> Scan | None:
+        with cls._state_lock:
+            return cls.scans.get(scan_id)
+
+    @classmethod
+    def _get_scans(cls, *scan_ids: int) -> tuple[Scan | None, ...]:
+        with cls._state_lock:
+            return tuple(cls.scans.get(scan_id) for scan_id in scan_ids)
+
+    @classmethod
+    def _snapshot_scans(cls) -> list[tuple[int, Scan]]:
+        with cls._state_lock:
+            return sorted(cls.scans.items())
 
     def __init__(
         self,
@@ -142,8 +171,7 @@ class ClientSession:
             )
             return True
 
-        scan_id = ClientSession.next_scan_id
-        ClientSession.next_scan_id += 1
+        scan_id = ClientSession._reserve_scan_id()
 
         UPLOAD_DIR.mkdir(exist_ok=True)
         output_path = UPLOAD_DIR / f"{scan_id}_{filename}"
@@ -156,7 +184,7 @@ class ClientSession:
         scan_obj.header = parser.parse_header_with_binutils()
         scan_obj.hashes = parser.calculate_hashes()
 
-        ClientSession.scans[scan_id] = scan_obj
+        ClientSession._store_scan(scan_obj)
         send_response(
             self.conn,
             f"OK UPLOADED scan_id={scan_id} filename={filename}",
@@ -164,11 +192,15 @@ class ClientSession:
         return True
 
     def handle_list(self):
-        if not ClientSession.scans:
+        scans = ClientSession._snapshot_scans()
+        if not scans:
             send_response(self.conn, "SCAN ID | FILE\n(Nenhum arquivo analisado)")
             return
-        res = "SCAN ID | FILE\n" + "\n".join([f"{sid} | {s.filename}" for sid, s in ClientSession.scans.items()])
-        send_response(self.conn, res.rstrip("\n"))
+
+        rows = "\n".join(
+            f"{scan_id} | {scan.filename}" for scan_id, scan in scans
+        )
+        send_response(self.conn, f"SCAN ID | FILE\n{rows}")
 
     def handle_help(self):
         """Etapa 20: Retorna a lista de comandos disponíveis e suas respectivas funções"""
@@ -201,8 +233,7 @@ class ClientSession:
             send_response(self.conn, "ERR INVALID_SCAN_ID")
             return
             
-        scan1 = ClientSession.scans.get(id1)
-        scan2 = ClientSession.scans.get(id2)
+        scan1, scan2 = ClientSession._get_scans(id1, id2)
         
         if not scan1 or not scan2:
             send_response(self.conn, "ERR SCAN_NOT_FOUND (Verifique os IDs com /LIST)")
@@ -260,7 +291,7 @@ class ClientSession:
             send_response(self.conn, "ERR INVALID_SCAN_ID")
             return
 
-        scan = ClientSession.scans.get(sid)
+        scan = ClientSession._get_scan(sid)
         if not scan:
             send_response(self.conn, "ERR SCAN_NOT_FOUND")
             return

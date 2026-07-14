@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock, call, patch
@@ -37,6 +38,25 @@ class RecordingSocket:
 
     def response_text(self) -> str:
         return self.sent.decode("utf-8")
+
+
+class SharedStateLockTests(unittest.TestCase):
+    def setUp(self) -> None:
+        with ClientSession._state_lock:
+            ClientSession.scans = {}
+            ClientSession.next_scan_id = 1
+
+    def test_reserves_unique_ids_across_concurrent_sessions(self) -> None:
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            scan_ids = list(executor.map(
+                lambda _index: ClientSession._reserve_scan_id(),
+                range(200),
+            ))
+
+        self.assertEqual(len(scan_ids), 200)
+        self.assertEqual(len(set(scan_ids)), 200)
+        self.assertEqual(sorted(scan_ids), list(range(1, 201)))
+        self.assertEqual(ClientSession.next_scan_id, 201)
 
 
 class SessionTimeoutTests(unittest.TestCase):
