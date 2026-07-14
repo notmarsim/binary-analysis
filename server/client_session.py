@@ -91,6 +91,12 @@ class ClientSession:
                 elif command == "/QUIT":
                     send_response(self.conn, "OK BYE")
                     break
+                elif command == "/HEX":
+                    self.handle_hex(parts)
+                elif command == "/SDUMP":
+                    self.handle_sdump(parts)
+                elif command == "/DIS":
+                    self.handle_dis(parts)
                 
                 elif command in [
                     "/INFO",
@@ -210,7 +216,6 @@ class ClientSession:
         send_response(self.conn, f"SCAN ID | FILE\n{rows}")
 
     def handle_help(self):
-        """Etapa 20: Retorna a lista de comandos disponíveis e suas respectivas funções"""
         help_text = (
             "=== COMANDOS DISPONÍVEIS ===\n"
             "/CONNECT              - Estabelece a conexão inicial com o servidor.\n"
@@ -223,10 +228,12 @@ class ClientSession:
             "/PROGRAM_HEADERS <id> - Exibe os cabeçalhos de programa (segmentos de execução).\n"
             "/STRINGS <id>         - Extrai e exibe as strings imprimíveis contidas no binário.\n"
             "/SYMBOLS <id>         - Exibe a tabela de símbolos (funções e variáveis globais).\n"
+            "/HEX <id> [off] [len] - Exibe o dump hexadecimal a partir de um offset e tamanho opcionais.\n"
+            "/SDUMP <id> <secao>   - Exibe o dump de dados de uma seção específica (ex.: .rodata) via objdump.\n"
+            "/DIS <id>             - Desmonta o código de máquina do ELF em Assembly (Disassembly).\n"
             "/HELP                 - Mostra este menu de ajuda com comandos e funcionalidades.\n"
             "/QUIT                 - Encerra a sessão com o servidor com segurança.\n"
         )
-       
         send_response(self.conn, help_text.rstrip("\n"))
 
     def handle_compare(self, parts: list[str]):
@@ -343,9 +350,92 @@ class ClientSession:
             send_response(self.conn, f"OK PROGRAM HEADERS FOR SCAN {sid}\n{res}")
 
         elif command == "/STRINGS":
-            res = parser.get_strings().split()
-            send_response(self.conn, f"OK STRINGS FOR SCAN {sid}\n" + res)
+            res = parser.get_strings() 
+            send_response(self.conn, f"OK STRINGS FOR SCAN {sid}\n{res}")
 
         elif command == "/SYMBOLS":
             res = parser.get_symbols()
             send_response(self.conn, f"OK SYMBOLS FOR SCAN {sid}\n{res}")
+
+    def handle_hex(self, parts: list[str]):
+        """Manipula o comando /HEX <id> [offset] [length] com parâmetros opcionais."""
+        if len(parts) < 2 or len(parts) > 4:
+            send_response(self.conn, "ERR MISSING_ARGS. Uso: /HEX <id> [offset] [length]")
+            return
+
+        try:
+            sid = int(parts[1])
+        except ValueError:
+            send_response(self.conn, "ERR INVALID_SCAN_ID")
+            return
+
+        offset = 0
+        length = 32
+
+        if len(parts) >= 3:
+            try:
+                offset = int(parts[2])
+                if offset < 0: raise ValueError
+            except ValueError:
+                send_response(self.conn, "ERR INVALID_OFFSET. Deve ser um inteiro positivo.")
+                return
+
+        if len(parts) == 4:
+            try:
+                length = int(parts[3])
+                if length <= 0 or length > 1024: raise ValueError
+            except ValueError:
+                send_response(self.conn, "ERR INVALID_LENGTH. Use um valor entre 1 e 1024.")
+                return
+
+        scan = ClientSession._get_scan(sid)
+        if not scan:
+            send_response(self.conn, "ERR SCAN_NOT_FOUND")
+            return
+
+        parser = ElfParser(Path(scan.filepath))
+        res = parser.get_hex_dump(offset, length)
+        send_response(self.conn, f"OK HEX DUMP FOR SCAN {sid} (Offset: {offset}, Length: {length})\n{res}")
+
+    def handle_sdump(self, parts: list[str]):
+        """Manipula o comando /SDUMP <id> <nome_da_secao>."""
+        if len(parts) != 3:
+            send_response(self.conn, "ERR MISSING_ARGS. Uso: /SDUMP <id> <secao>")
+            return
+
+        try:
+            sid = int(parts[1])
+        except ValueError:
+            send_response(self.conn, "ERR INVALID_SCAN_ID")
+            return
+
+        section_name = parts[2]
+        scan = ClientSession._get_scan(sid)
+        if not scan:
+            send_response(self.conn, "ERR SCAN_NOT_FOUND")
+            return
+
+        parser = ElfParser(Path(scan.filepath))
+        res = parser.get_section_dump(section_name)
+        send_response(self.conn, f"OK SECTION DUMP FOR '{section_name}' (SCAN {sid})\n{res}")
+
+    def handle_dis(self, parts: list[str]):
+        """Manipula o comando /DIS <id> para desmontar as instruções executáveis."""
+        if len(parts) != 2:
+            send_response(self.conn, "ERR MISSING_ARGS. Uso: /DIS <id>")
+            return
+
+        try:
+            sid = int(parts[1])
+        except ValueError:
+            send_response(self.conn, "ERR INVALID_SCAN_ID")
+            return
+
+        scan = ClientSession._get_scan(sid)
+        if not scan:
+            send_response(self.conn, "ERR SCAN_NOT_FOUND")
+            return
+
+        parser = ElfParser(Path(scan.filepath))
+        res = parser.get_disassembly()
+        send_response(self.conn, f"OK ASSEMBLY DISASSEMBLY FOR SCAN {sid}\n{res}")
