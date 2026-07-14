@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Sequence
 
 from protocol_limits import MAX_FILE_SIZE_BYTES
+from wire_protocol import ProtocolError, read_response, send_command
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000
@@ -40,32 +41,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def read_response(sock: socket.socket) -> str:
-    """Lê linhas do socket até encontrar um bloco vazio terminador (\n\n)."""
-    lines = []
-    buffer = bytearray()
-
-    while True:
-        chunk = sock.recv(1)
-        if not chunk:
-            break
-        if chunk == b"\n":
-            line = buffer.decode("utf-8", errors="replace").strip()
-
-            if not line and lines:
-                break
-            if line:
-                lines.append(line)
-            buffer.clear()
-        else:
-            buffer.extend(chunk)
-
-    return "\n".join(lines)
-
-
-def send_line(sock: socket.socket, line: str) -> None:
-    sock.sendall((line + "\n").encode("utf-8"))
-
 
 def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
     parts = command_line.split(maxsplit=1)
@@ -92,7 +67,7 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
     filename = local_path.name
     file_bytes = local_path.read_bytes()
 
-    send_line(sock, f"/UPLOAD {filename} {size}")
+    send_command(sock, f"/UPLOAD {filename} {size}")
     sock.sendall(file_bytes)
     return True
 
@@ -116,7 +91,7 @@ def run_interactive(host: str, port: int) -> None:
                     print(read_response(sock))
                 continue
 
-            send_line(sock, user_input)
+            send_command(sock, user_input)
             response = read_response(sock)
             print(response)
 
@@ -129,6 +104,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         run_interactive(args.host, args.port)
+    except ProtocolError as exc:
+        print(f"[-] erro de protocolo: {exc}")
+        return 1
     except ConnectionRefusedError:
         print(f"[-] conexão recusada por {args.host}:{args.port}")
         return 1
