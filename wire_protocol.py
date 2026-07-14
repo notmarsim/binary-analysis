@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import socket
 
+from protocol_limits import MAX_FILENAME_SIZE_BYTES
+
 COMMAND_TERMINATOR = b"\n"
 RESPONSE_PREFIX = "RESPONSE"
 MAX_CONTROL_LINE_BYTES = 4096
@@ -12,6 +14,40 @@ MAX_RESPONSE_SIZE_BYTES = 8 * 1024 * 1024
 
 class ProtocolError(Exception):
     """Indica que uma mensagem recebida viola o protocolo da aplicação."""
+
+
+def encode_upload_filename(filename: str) -> bytes:
+    """Valida e codifica um nome de arquivo usado no protocolo de upload."""
+    if not filename or filename in {".", ".."}:
+        raise ValueError("nome de arquivo inválido")
+    if "/" in filename or "\x00" in filename:
+        raise ValueError("o nome deve identificar apenas um arquivo")
+    if any(ord(char) < 32 or ord(char) == 127 for char in filename):
+        raise ValueError("o nome não pode conter caracteres de controle")
+
+    filename_bytes = filename.encode("utf-8")
+    if len(filename_bytes) > MAX_FILENAME_SIZE_BYTES:
+        raise ValueError(
+            "nome de arquivo excede o limite de "
+            f"{MAX_FILENAME_SIZE_BYTES} bytes"
+        )
+
+    return filename_bytes
+
+
+def decode_upload_filename(data: bytes) -> str:
+    """Decodifica e valida um nome recebido no protocolo de upload."""
+    try:
+        filename = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProtocolError("nome de arquivo não está em UTF-8") from exc
+
+    try:
+        encode_upload_filename(filename)
+    except ValueError as exc:
+        raise ProtocolError(str(exc)) from exc
+
+    return filename
 
 
 def _decode_control_line(data: bytes) -> str:

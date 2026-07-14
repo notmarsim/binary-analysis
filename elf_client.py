@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Sequence
 
 from protocol_limits import MAX_FILE_SIZE_BYTES
-from wire_protocol import ProtocolError, read_response, send_command
+from wire_protocol import (
+    ProtocolError,
+    encode_upload_filename,
+    read_response,
+    send_command,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9000
@@ -41,7 +46,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-
 def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
     parts = command_line.split(maxsplit=1)
     if len(parts) < 2:
@@ -53,11 +57,11 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
         print("Erro local: arquivo inválido ou não encontrado.")
         return False
 
-    size = local_path.stat().st_size
-    if size <= 0:
+    reported_size = local_path.stat().st_size
+    if reported_size <= 0:
         print("Erro local: o arquivo está vazio.")
         return False
-    if size > MAX_FILE_SIZE_BYTES:
+    if reported_size > MAX_FILE_SIZE_BYTES:
         print(
             "Erro local: arquivo excede o limite de "
             f"{MAX_FILE_SIZE_BYTES} bytes."
@@ -65,9 +69,31 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
         return False
 
     filename = local_path.name
-    file_bytes = local_path.read_bytes()
+    try:
+        filename_bytes = encode_upload_filename(filename)
+    except ValueError as exc:
+        print(f"Erro local: {exc}.")
+        return False
 
-    send_command(sock, f"/UPLOAD {filename} {size}")
+    file_bytes = local_path.read_bytes()
+    size = len(file_bytes)
+    if size <= 0:
+        print("Erro local: o arquivo ficou vazio durante a leitura.")
+        return False
+    if size > MAX_FILE_SIZE_BYTES:
+        print(
+            "Erro local: arquivo excedeu o limite de "
+            f"{MAX_FILE_SIZE_BYTES} bytes durante a leitura."
+        )
+        return False
+
+    send_command(sock, f"/UPLOAD {len(filename_bytes)} {size}")
+    readiness = read_response(sock)
+    if readiness != "OK READY":
+        print(readiness)
+        return False
+
+    sock.sendall(filename_bytes)
     sock.sendall(file_bytes)
     return True
 
