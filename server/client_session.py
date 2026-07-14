@@ -12,7 +12,7 @@ from wire_protocol import (
     send_response,
 )
 from models.scan import Scan
-from analysis.elf_parser import ElfParser
+from analysis.elf_parser import ElfParser, has_elf_magic
 from protocol_limits import (
     MAX_FILE_SIZE_BYTES,
     MAX_FILENAME_SIZE_BYTES,
@@ -134,6 +134,13 @@ class ClientSession:
         except ProtocolError:
             send_response(self.conn, "ERR INCOMPLETE_UPLOAD")
             return False
+
+        if not has_elf_magic(file_bytes):
+            send_response(
+                self.conn,
+                "ERR UNSUPPORTED_FORMAT expected=ELF",
+            )
+            return True
 
         scan_id = ClientSession.next_scan_id
         ClientSession.next_scan_id += 1

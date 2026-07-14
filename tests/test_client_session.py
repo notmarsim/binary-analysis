@@ -106,6 +106,28 @@ class UploadSizeValidationTests(ClientSessionTestCase):
         recv_exactly.assert_not_called()
 
 
+class ElfFormatValidationTests(ClientSessionTestCase):
+    @patch("server.client_session.ElfParser")
+    @patch("server.client_session.recv_exactly")
+    def test_rejects_non_elf_payload_without_creating_scan(
+        self, recv_exactly: Mock, elf_parser: Mock
+    ) -> None:
+        filename = b"sample.bin"
+        payload = b"plain text"
+        recv_exactly.side_effect = [filename, payload]
+
+        keep_session = self.session.handle_upload(
+            ["/UPLOAD", str(len(filename)), str(len(payload))]
+        )
+
+        self.assertTrue(keep_session)
+        self.assertIn("OK READY", self.socket.response_text())
+        self.assertIn("ERR UNSUPPORTED_FORMAT", self.socket.response_text())
+        self.assertEqual(ClientSession.scans, {})
+        self.assertEqual(ClientSession.next_scan_id, 1)
+        elf_parser.assert_not_called()
+
+
 class UploadFilenameFramingTests(ClientSessionTestCase):
     @patch("server.client_session.recv_exactly")
     def test_rejects_upload_before_connect_without_reading_payload(
@@ -148,7 +170,7 @@ class UploadFilenameFramingTests(ClientSessionTestCase):
     ) -> None:
         filename = "meu programa.elf"
         filename_bytes = filename.encode("utf-8")
-        file_bytes = b"ELF"
+        file_bytes = b"\x7fELF"
         recv_exactly.side_effect = [filename_bytes, file_bytes]
         parser = elf_parser.return_value
         parser.parse_header_with_binutils.return_value = {"Type": "EXEC"}
@@ -171,7 +193,7 @@ class UploadFilenameFramingTests(ClientSessionTestCase):
         )
         self.assertEqual(
             recv_exactly.call_args_list,
-            [call(self.socket, len(filename_bytes)), call(self.socket, 3)],
+            [call(self.socket, len(filename_bytes)), call(self.socket, len(file_bytes))],
         )
 
     @patch("server.client_session.recv_exactly", return_value=b"../evil")

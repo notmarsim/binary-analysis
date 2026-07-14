@@ -3,6 +3,14 @@ import hashlib
 import struct
 from pathlib import Path
 
+ELF_MAGIC = b"\x7fELF"
+
+
+def has_elf_magic(data: bytes) -> bool:
+    """Retorna ``True`` quando o payload possui a assinatura ELF."""
+    return data.startswith(ELF_MAGIC)
+
+
 class ElfParser:
     def __init__(self, path: Path):
         self.path = path.resolve()
