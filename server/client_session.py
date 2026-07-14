@@ -1,5 +1,6 @@
 import socket
 import sys
+import threading
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -12,18 +13,57 @@ from wire_protocol import (
     send_response,
 )
 from models.scan import Scan
-from analysis.elf_parser import ElfParser
-from protocol_limits import MAX_FILE_SIZE_BYTES, MAX_FILENAME_SIZE_BYTES
+from analysis.elf_parser import ElfParser, has_elf_magic
+from protocol_limits import (
+    MAX_FILE_SIZE_BYTES,
+    MAX_FILENAME_SIZE_BYTES,
+    SERVER_SESSION_TIMEOUT_SECONDS,
+)
 from analysis import hashing, similarity
 
 UPLOAD_DIR = Path("uploads")
 
 class ClientSession:
-    scans = {}
+    scans: dict[int, Scan] = {}
     next_scan_id = 1
+    _state_lock = threading.RLock()
 
-    def __init__(self, conn: socket.socket, addr):
+    @classmethod
+    def _reserve_scan_id(cls) -> int:
+        with cls._state_lock:
+            scan_id = cls.next_scan_id
+            cls.next_scan_id += 1
+            return scan_id
+
+    @classmethod
+    def _store_scan(cls, scan: Scan) -> None:
+        with cls._state_lock:
+            cls.scans[scan.scan_id] = scan
+
+    @classmethod
+    def _get_scan(cls, scan_id: int) -> Scan | None:
+        with cls._state_lock:
+            return cls.scans.get(scan_id)
+
+    @classmethod
+    def _get_scans(cls, *scan_ids: int) -> tuple[Scan | None, ...]:
+        with cls._state_lock:
+            return tuple(cls.scans.get(scan_id) for scan_id in scan_ids)
+
+    @classmethod
+    def _snapshot_scans(cls) -> list[tuple[int, Scan]]:
+        with cls._state_lock:
+            return sorted(cls.scans.items())
+
+    def __init__(
+        self,
+        conn: socket.socket,
+        addr,
+        *,
+        timeout_seconds: float = SERVER_SESSION_TIMEOUT_SECONDS,
+    ):
         self.conn = conn
+        self.conn.settimeout(timeout_seconds)
         self.addr = addr
         self.connected = False
 
@@ -52,12 +92,25 @@ class ClientSession:
                     send_response(self.conn, "OK BYE")
                     break
                 
-                elif command in ["/INFO", "/SECTION_HEADERS", "/PROGRAM_HEADERS", "/STRINGS", "/SYMBOLS"]:
+                elif command in [
+                    "/INFO",
+                    "/HASHES",
+                    "/SECTION_HEADERS",
+                    "/PROGRAM_HEADERS",
+                    "/STRINGS",
+                    "/SYMBOLS",
+                ]:
                     self.handle_analysis_commands(command, parts)
                 elif command == "/HELP":
                     self.handle_help()
                 else:
                     send_response(self.conn, "ERR INVALID_COMMAND")
+        except socket.timeout:
+            print(f"[!] tempo limite excedido para {self.addr}")
+            try:
+                send_response(self.conn, "ERR TIMEOUT")
+            except OSError:
+                pass
         except ProtocolError as exc:
             print(f"[!] erro de protocolo com {self.addr}: {exc}")
         except Exception as e:
@@ -118,8 +171,14 @@ class ClientSession:
             send_response(self.conn, "ERR INCOMPLETE_UPLOAD")
             return False
 
-        scan_id = ClientSession.next_scan_id
-        ClientSession.next_scan_id += 1
+        if not has_elf_magic(file_bytes):
+            send_response(
+                self.conn,
+                "ERR UNSUPPORTED_FORMAT expected=ELF",
+            )
+            return True
+
+        scan_id = ClientSession._reserve_scan_id()
 
         UPLOAD_DIR.mkdir(exist_ok=True)
         output_path = UPLOAD_DIR / f"{scan_id}_{filename}"
@@ -132,7 +191,7 @@ class ClientSession:
         scan_obj.header = parser.parse_header_with_binutils()
         scan_obj.hashes = parser.calculate_hashes()
 
-        ClientSession.scans[scan_id] = scan_obj
+        ClientSession._store_scan(scan_obj)
         send_response(
             self.conn,
             f"OK UPLOADED scan_id={scan_id} filename={filename}",
@@ -140,11 +199,15 @@ class ClientSession:
         return True
 
     def handle_list(self):
-        if not ClientSession.scans:
+        scans = ClientSession._snapshot_scans()
+        if not scans:
             send_response(self.conn, "SCAN ID | FILE\n(Nenhum arquivo analisado)")
             return
-        res = "SCAN ID | FILE\n" + "\n".join([f"{sid} | {s.filename}" for sid, s in ClientSession.scans.items()])
-        send_response(self.conn, res.rstrip("\n"))
+
+        rows = "\n".join(
+            f"{scan_id} | {scan.filename}" for scan_id, scan in scans
+        )
+        send_response(self.conn, f"SCAN ID | FILE\n{rows}")
 
     def handle_help(self):
         """Etapa 20: Retorna a lista de comandos disponíveis e suas respectivas funções"""
@@ -155,6 +218,7 @@ class ClientSession:
             "/LIST                 - Lista todos os arquivos já enviados e seus respectivos SCAN IDs.\n"
             "/COMPARE <id1> <id2>  - Compara dois binários via SSDEEP e retorna a similaridade (0 a 100%).\n"
             "/INFO <id>            - Exibe um resumo técnico do cabeçalho (Arquitetura, Entry Point, etc).\n"
+            "/HASHES <id>          - Exibe MD5, SHA-1, SHA-256 e SSDEEP do arquivo.\n"
             "/SECTION_HEADERS <id> - Lista as Section Headers (tabela de seções) do binário.\n"
             "/PROGRAM_HEADERS <id> - Exibe os cabeçalhos de programa (segmentos de execução).\n"
             "/STRINGS <id>         - Extrai e exibe as strings imprimíveis contidas no binário.\n"
@@ -177,8 +241,7 @@ class ClientSession:
             send_response(self.conn, "ERR INVALID_SCAN_ID")
             return
             
-        scan1 = ClientSession.scans.get(id1)
-        scan2 = ClientSession.scans.get(id2)
+        scan1, scan2 = ClientSession._get_scans(id1, id2)
         
         if not scan1 or not scan2:
             send_response(self.conn, "ERR SCAN_NOT_FOUND (Verifique os IDs com /LIST)")
@@ -236,9 +299,24 @@ class ClientSession:
             send_response(self.conn, "ERR INVALID_SCAN_ID")
             return
 
-        scan = ClientSession.scans.get(sid)
+        scan = ClientSession._get_scan(sid)
         if not scan:
             send_response(self.conn, "ERR SCAN_NOT_FOUND")
+            return
+
+        if command == "/HASHES":
+            labels = (
+                ("MD5", "MD5"),
+                ("SHA1", "SHA-1"),
+                ("SHA256", "SHA-256"),
+                ("SSDEEP", "SSDEEP"),
+            )
+            lines = [f"OK HASHES FOR SCAN {sid}"]
+            lines.extend(
+                f"{label}: {scan.hashes.get(key, 'N/A')}"
+                for key, label in labels
+            )
+            send_response(self.conn, "\n".join(lines))
             return
 
         parser = ElfParser(Path(scan.filepath))

@@ -10,9 +10,14 @@ from elf_client import (
     DEFAULT_PORT,
     handle_local_upload,
     parse_args,
+    run_interactive,
     parse_port,
 )
-from protocol_limits import MAX_FILE_SIZE_BYTES
+from protocol_limits import (
+    CONNECT_TIMEOUT_SECONDS,
+    MAX_FILE_SIZE_BYTES,
+    SOCKET_IO_TIMEOUT_SECONDS,
+)
 
 
 class ParsePortTests(unittest.TestCase):
@@ -59,6 +64,40 @@ class RecordingSocket:
 
     def sendall(self, data: bytes) -> None:
         self.sent.extend(data)
+
+
+class ContextSocket(RecordingSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.timeout = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
+
+
+class ClientTimeoutTests(unittest.TestCase):
+    @patch("elf_client.read_response", return_value="OK BYE")
+    @patch("builtins.input", return_value="/QUIT")
+    @patch("elf_client.socket.create_connection")
+    def test_configures_connect_and_io_timeouts(
+        self, create_connection, _input, _read_response
+    ) -> None:
+        sock = ContextSocket()
+        create_connection.return_value = sock
+
+        with patch("builtins.print"):
+            run_interactive("127.0.0.1", 9000)
+
+        create_connection.assert_called_once_with(
+            ("127.0.0.1", 9000), timeout=CONNECT_TIMEOUT_SECONDS
+        )
+        self.assertEqual(sock.timeout, SOCKET_IO_TIMEOUT_SECONDS)
 
 
 class LocalUploadValidationTests(unittest.TestCase):

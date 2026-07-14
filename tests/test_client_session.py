@@ -1,30 +1,63 @@
-import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import ModuleType
 from unittest.mock import Mock, call, patch
 
-try:
-    import ssdeep  # noqa: F401
-except ModuleNotFoundError:
-    ssdeep_stub = ModuleType("ssdeep")
-    ssdeep_stub.compare = lambda _left, _right: 0
-    sys.modules["ssdeep"] = ssdeep_stub
-
-from protocol_limits import MAX_FILE_SIZE_BYTES, MAX_FILENAME_SIZE_BYTES
+from protocol_limits import (
+    MAX_FILE_SIZE_BYTES,
+    MAX_FILENAME_SIZE_BYTES,
+    SERVER_SESSION_TIMEOUT_SECONDS,
+)
+from models.scan import Scan
 from server.client_session import ClientSession
 
 
 class RecordingSocket:
     def __init__(self) -> None:
         self.sent = bytearray()
+        self.timeout = None
+        self.closed = False
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def close(self) -> None:
+        self.closed = True
 
     def sendall(self, data: bytes) -> None:
         self.sent.extend(data)
 
     def response_text(self) -> str:
         return self.sent.decode("utf-8")
+
+
+class SharedStateLockTests(unittest.TestCase):
+    def setUp(self) -> None:
+        with ClientSession._state_lock:
+            ClientSession.scans = {}
+            ClientSession.next_scan_id = 1
+
+    def test_reserves_unique_ids_across_concurrent_sessions(self) -> None:
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            scan_ids = list(executor.map(
+                lambda _index: ClientSession._reserve_scan_id(),
+                range(200),
+            ))
+
+        self.assertEqual(len(scan_ids), 200)
+        self.assertEqual(len(set(scan_ids)), 200)
+        self.assertEqual(sorted(scan_ids), list(range(1, 201)))
+        self.assertEqual(ClientSession.next_scan_id, 201)
+
+
+class SessionTimeoutTests(unittest.TestCase):
+    def test_configures_timeout_on_client_socket(self) -> None:
+        sock = RecordingSocket()
+
+        ClientSession(sock, ("127.0.0.1", 12345))
+
+        self.assertEqual(sock.timeout, SERVER_SESSION_TIMEOUT_SECONDS)
 
 
 class ClientSessionTestCase(unittest.TestCase):
@@ -34,6 +67,29 @@ class ClientSessionTestCase(unittest.TestCase):
         self.socket = RecordingSocket()
         self.session = ClientSession(self.socket, ("127.0.0.1", 12345))
         self.session.connected = True
+
+
+
+
+class HashReportingTests(ClientSessionTestCase):
+    def test_exposes_all_hashes_for_existing_scan(self) -> None:
+        scan = Scan(7, "sample.elf", "/tmp/sample.elf")
+        scan.hashes = {
+            "MD5": "md5-value",
+            "SHA1": "sha1-value",
+            "SHA256": "sha256-value",
+            "SSDEEP": "ssdeep-value",
+        }
+        ClientSession._store_scan(scan)
+
+        self.session.handle_analysis_commands("/HASHES", ["/HASHES", "7"])
+
+        response = self.socket.response_text()
+        self.assertIn("OK HASHES FOR SCAN 7", response)
+        self.assertIn("MD5: md5-value", response)
+        self.assertIn("SHA-1: sha1-value", response)
+        self.assertIn("SHA-256: sha256-value", response)
+        self.assertIn("SSDEEP: ssdeep-value", response)
 
 
 class UploadSizeValidationTests(ClientSessionTestCase):
@@ -85,6 +141,28 @@ class UploadSizeValidationTests(ClientSessionTestCase):
         recv_exactly.assert_not_called()
 
 
+class ElfFormatValidationTests(ClientSessionTestCase):
+    @patch("server.client_session.ElfParser")
+    @patch("server.client_session.recv_exactly")
+    def test_rejects_non_elf_payload_without_creating_scan(
+        self, recv_exactly: Mock, elf_parser: Mock
+    ) -> None:
+        filename = b"sample.bin"
+        payload = b"plain text"
+        recv_exactly.side_effect = [filename, payload]
+
+        keep_session = self.session.handle_upload(
+            ["/UPLOAD", str(len(filename)), str(len(payload))]
+        )
+
+        self.assertTrue(keep_session)
+        self.assertIn("OK READY", self.socket.response_text())
+        self.assertIn("ERR UNSUPPORTED_FORMAT", self.socket.response_text())
+        self.assertEqual(ClientSession.scans, {})
+        self.assertEqual(ClientSession.next_scan_id, 1)
+        elf_parser.assert_not_called()
+
+
 class UploadFilenameFramingTests(ClientSessionTestCase):
     @patch("server.client_session.recv_exactly")
     def test_rejects_upload_before_connect_without_reading_payload(
@@ -127,7 +205,7 @@ class UploadFilenameFramingTests(ClientSessionTestCase):
     ) -> None:
         filename = "meu programa.elf"
         filename_bytes = filename.encode("utf-8")
-        file_bytes = b"ELF"
+        file_bytes = b"\x7fELF"
         recv_exactly.side_effect = [filename_bytes, file_bytes]
         parser = elf_parser.return_value
         parser.parse_header_with_binutils.return_value = {"Type": "EXEC"}
@@ -150,7 +228,7 @@ class UploadFilenameFramingTests(ClientSessionTestCase):
         )
         self.assertEqual(
             recv_exactly.call_args_list,
-            [call(self.socket, len(filename_bytes)), call(self.socket, 3)],
+            [call(self.socket, len(filename_bytes)), call(self.socket, len(file_bytes))],
         )
 
     @patch("server.client_session.recv_exactly", return_value=b"../evil")

@@ -3,7 +3,11 @@ import socket
 from pathlib import Path
 from typing import Sequence
 
-from protocol_limits import MAX_FILE_SIZE_BYTES
+from protocol_limits import (
+    CONNECT_TIMEOUT_SECONDS,
+    MAX_FILE_SIZE_BYTES,
+    SOCKET_IO_TIMEOUT_SECONDS,
+)
 from wire_protocol import (
     ProtocolError,
     encode_upload_filename,
@@ -101,7 +105,10 @@ def handle_local_upload(sock: socket.socket, command_line: str) -> bool:
 def run_interactive(host: str, port: int) -> None:
     print(f"[+] conectando ao servidor em {host}:{port}")
 
-    with socket.create_connection((host, port)) as sock:
+    with socket.create_connection(
+        (host, port), timeout=CONNECT_TIMEOUT_SECONDS
+    ) as sock:
+        sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
         print(
             "[+] digite os comandos "
             "(ex.: /CONNECT, /UPLOAD /bin/ls, /LIST, /INFO 1, /QUIT)"
@@ -132,6 +139,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_interactive(args.host, args.port)
     except ProtocolError as exc:
         print(f"[-] erro de protocolo: {exc}")
+        return 1
+    except TimeoutError:
+        print(
+            "[-] tempo limite excedido ao comunicar com "
+            f"{args.host}:{args.port}"
+        )
         return 1
     except ConnectionRefusedError:
         print(f"[-] conexão recusada por {args.host}:{args.port}")
