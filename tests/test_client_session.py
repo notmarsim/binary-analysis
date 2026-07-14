@@ -12,19 +12,40 @@ except ModuleNotFoundError:
     ssdeep_stub.compare = lambda _left, _right: 0
     sys.modules["ssdeep"] = ssdeep_stub
 
-from protocol_limits import MAX_FILE_SIZE_BYTES, MAX_FILENAME_SIZE_BYTES
+from protocol_limits import (
+    MAX_FILE_SIZE_BYTES,
+    MAX_FILENAME_SIZE_BYTES,
+    SERVER_SESSION_TIMEOUT_SECONDS,
+)
 from server.client_session import ClientSession
 
 
 class RecordingSocket:
     def __init__(self) -> None:
         self.sent = bytearray()
+        self.timeout = None
+        self.closed = False
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def close(self) -> None:
+        self.closed = True
 
     def sendall(self, data: bytes) -> None:
         self.sent.extend(data)
 
     def response_text(self) -> str:
         return self.sent.decode("utf-8")
+
+
+class SessionTimeoutTests(unittest.TestCase):
+    def test_configures_timeout_on_client_socket(self) -> None:
+        sock = RecordingSocket()
+
+        ClientSession(sock, ("127.0.0.1", 12345))
+
+        self.assertEqual(sock.timeout, SERVER_SESSION_TIMEOUT_SECONDS)
 
 
 class ClientSessionTestCase(unittest.TestCase):

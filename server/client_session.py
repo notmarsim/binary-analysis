@@ -13,7 +13,11 @@ from wire_protocol import (
 )
 from models.scan import Scan
 from analysis.elf_parser import ElfParser
-from protocol_limits import MAX_FILE_SIZE_BYTES, MAX_FILENAME_SIZE_BYTES
+from protocol_limits import (
+    MAX_FILE_SIZE_BYTES,
+    MAX_FILENAME_SIZE_BYTES,
+    SERVER_SESSION_TIMEOUT_SECONDS,
+)
 from analysis import hashing, similarity
 
 UPLOAD_DIR = Path("uploads")
@@ -22,8 +26,15 @@ class ClientSession:
     scans = {}
     next_scan_id = 1
 
-    def __init__(self, conn: socket.socket, addr):
+    def __init__(
+        self,
+        conn: socket.socket,
+        addr,
+        *,
+        timeout_seconds: float = SERVER_SESSION_TIMEOUT_SECONDS,
+    ):
         self.conn = conn
+        self.conn.settimeout(timeout_seconds)
         self.addr = addr
         self.connected = False
 
@@ -58,6 +69,12 @@ class ClientSession:
                     self.handle_help()
                 else:
                     send_response(self.conn, "ERR INVALID_COMMAND")
+        except socket.timeout:
+            print(f"[!] tempo limite excedido para {self.addr}")
+            try:
+                send_response(self.conn, "ERR TIMEOUT")
+            except OSError:
+                pass
         except ProtocolError as exc:
             print(f"[!] erro de protocolo com {self.addr}: {exc}")
         except Exception as e:
