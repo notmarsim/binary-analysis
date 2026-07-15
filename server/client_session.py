@@ -19,7 +19,7 @@ from protocol_limits import (
     MAX_FILENAME_SIZE_BYTES,
     SERVER_SESSION_TIMEOUT_SECONDS,
 )
-from analysis import hashing, similarity
+from analysis import hashing, similarity, report_html
 
 UPLOAD_DIR = Path("uploads")
 
@@ -105,6 +105,7 @@ class ClientSession:
                     "/PROGRAM_HEADERS",
                     "/STRINGS",
                     "/SYMBOLS",
+                    "/REPORT"
                 ]:
                     self.handle_analysis_commands(command, parts)
                 elif command == "/HELP":
@@ -231,6 +232,7 @@ class ClientSession:
             "/HEX <id> [off] [len] - Exibe o dump hexadecimal a partir de um offset e tamanho opcionais.\n"
             "/SDUMP <id> <secao>   - Exibe o dump de dados de uma seção específica (ex.: .rodata) via objdump.\n"
             "/DIS <id>             - Desmonta o código de máquina do ELF em Assembly (Disassembly).\n"
+            "/REPORT <id>          - Gera um report HTML com informações úteis sobre o binário. \n"
             "/HELP                 - Mostra este menu de ajuda com comandos e funcionalidades.\n"
             "/QUIT                 - Encerra a sessão com o servidor com segurança.\n"
         )
@@ -357,6 +359,16 @@ class ClientSession:
             res = parser.get_symbols()
             send_response(self.conn, f"OK SYMBOLS FOR SCAN {sid}\n{res}")
 
+        elif command == "/REPORT":
+            html_content = report_html.generate_html(
+                parser, 
+                scan.filename, 
+                scan.file_size, 
+                scan.hashes, 
+                scan.header
+            )
+            send_response(self.conn, f"OK REPORT_GENERATED\n{html_content}")
+
     def handle_hex(self, parts: list[str]):
         """Manipula o comando /HEX <id> [offset] [length] com parâmetros opcionais."""
         if len(parts) < 2 or len(parts) > 4:
@@ -439,3 +451,25 @@ class ClientSession:
         parser = ElfParser(Path(scan.filepath))
         res = parser.get_disassembly()
         send_response(self.conn, f"OK ASSEMBLY DISASSEMBLY FOR SCAN {sid}\n{res}")
+
+    def handle_report(self, parts: list[str]):
+        """Manipula o comando /REPORT <id> gerando uma estrutura HTML consolidada."""
+        if len(parts) != 2:
+            send_response(self.conn, "ERR MISSING_SCAN_ID. Uso: /REPORT <id>")
+            return
+        try:
+            sid = int(parts[1])
+        except ValueError:
+            send_response(self.conn, "ERR INVALID_SCAN_ID")
+            return
+
+        scan = ClientSession._get_scan(sid)
+        if not scan:
+            send_response(self.conn, "ERR SCAN_NOT_FOUND")
+            return
+
+        parser = ElfParser(Path(scan.filepath))
+        
+        html_content = parser.get_html_report(scan.filename, scan.file_size, scan.hashes, scan.header)
+        
+        send_response(self.conn, f"OK REPORT_GENERATED\n{html_content}")
