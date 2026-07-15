@@ -82,44 +82,73 @@ class ElfParser:
 
 
     def get_section_headers(self) -> str:
-        """Etapa 6: Retorna a tabela de seções estruturada do readelf -S"""
         try:
             result = subprocess.run(
-                ["readelf", "-S", str(self.path)],
+                ["readelf", "-S", "-W", str(self.path)],
                 capture_output=True, text=True, check=True, env={"LANG": "C"}
             )
     
             lines = result.stdout.splitlines()
             output = []
+            
+            in_key_to_flags = False
+            
             for line in lines:
-                if any(x in line for x in ["There are", "Section Headers:", "Key to Flags:"]):
+                line_stripped = line.strip()
+                
+                if any(x in line_stripped for x in ["There are", "Section Headers:"]):
                     continue
-                if line.strip():
+                
+                if "Key to Flags:" in line_stripped:
+                    in_key_to_flags = True
                     output.append(line)
+                    continue
+                
+                if in_key_to_flags:
+              
+                    output.append(line)
+                    continue
+                
+                if line_stripped:
+                    output.append(line)
+                    
             return "\n".join(output)
+            
         except Exception as e:
             return f"Erro ao extrair seções: {e}"
 
     def get_program_headers(self) -> str:
-        """Etapa 7: Retorna os segmentos de execução do readelf -l"""
         try:
+
             result = subprocess.run(
-                ["readelf", "-l", str(self.path)],
+                ["readelf", "-l", "-W", str(self.path)],
                 capture_output=True, text=True, check=True, env={"LANG": "C"}
             )
             lines = result.stdout.splitlines()
             output = []
+            
+            in_program_headers = False
             for line in lines:
-                if "Section to Segment mapping" in line:
-                    break
-                if line.strip():
+                line_stripped = line.strip()
+      
+                if "Program Headers:" in line_stripped:
+                    in_program_headers = True
                     output.append(line)
+                    continue
+               
+                if "Section to Segment mapping" in line_stripped:
+                    break
+                
+                if in_program_headers:
+      
+                    output.append(line)
+                    
             return "\n".join(output)
+            
         except Exception as e:
             return f"Erro ao extrair cabeçalhos de programa: {e}"
 
     def get_strings(self) -> str:
-        """Etapa 9: Retorna as strings legíveis do binário (filtrando linhas muito longas para rede)"""
         try:
             result = subprocess.run(
                 ["strings", "-n", "4", str(self.path)],
@@ -133,7 +162,6 @@ class ElfParser:
             return f"Erro ao extrair strings: {e}"
 
     def get_symbols(self) -> str:
-        """Etapa 10: Retorna a tabela de símbolos do readelf -s"""
         try:
             result = subprocess.run(
                 ["readelf", "-s", str(self.path)],

@@ -1,4 +1,3 @@
-# server/elf_server.py
 import socket
 import threading
 import sys

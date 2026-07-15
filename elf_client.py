@@ -2,6 +2,8 @@ import argparse
 import socket
 from pathlib import Path
 from typing import Sequence
+import webbrowser
+import time
 
 from protocol_limits import (
     CONNECT_TIMEOUT_SECONDS,
@@ -126,7 +128,28 @@ def run_interactive(host: str, port: int) -> None:
 
             send_command(sock, user_input)
             response = read_response(sock)
-            print(response)
+
+            if user_input.upper().startswith("/REPORT") and response.startswith("OK REPORT_GENERATED"):
+                _, html_payload = response.split("\n", 1)
+                
+                output_dir = Path("reports")
+                output_dir.mkdir(exist_ok=True) 
+                
+                parts = user_input.split()
+                scan_id = parts[1] if len(parts) > 1 else "output"
+                
+                report_path = output_dir / f"relatorio_scan_{scan_id}.html"
+                report_path.write_text(html_payload, encoding="utf-8")
+                
+                print(f"[+] Relatório salvo localmente em '{report_path.absolute()}'.")
+                print("[+] Abrindo no navegador...")
+                
+                webbrowser.open(report_path.absolute().as_uri())
+                
+                time.sleep(1.0)
+            else:
+           
+                print(response)
 
             if user_input.upper() == "/QUIT" or "OK BYE" in response:
                 break
